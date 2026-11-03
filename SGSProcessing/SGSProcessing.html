@@ -175,6 +175,10 @@
                 setMsg('');
                 show('mainDiv', false);
                 show('loginDiv', true);
+            } else if (/MyAccount.*does not exist/i.test(e.message)) {
+                // older SGS (e.g. cloud.skylineglobe.com): no processing workflows in its API
+                setMsg('This SkylineGlobe Server (' + sgsBase + ') has no processing workflows. ' +
+                       'Open TEF from an SGS with Processing Workers to use this tool.', 'err');
             } else {
                 setMsg('Cannot reach SGS: ' + e.message, 'err');
             }

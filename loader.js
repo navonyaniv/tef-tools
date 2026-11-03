@@ -26,12 +26,28 @@
         }
     };
 
-    analysis.addAnalysisTool({
+    // TEF is served with Cross-Origin-Embedder-Policy: require-corp, so an <img src="https://...github.io/...">
+    // is blocked. The icon is fetched (GitHub Pages allows CORS) and shown from a local blob URL instead.
+    function addTool(item, iconPath) {
+        item.icon = '';
+        analysis.addAnalysisTool(item);
+        fetch(BASE + iconPath)
+            .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+            .then(function (b) { $('#' + item.id + ' img').attr('src', URL.createObjectURL(b)); })
+            .catch(function (e) { console.warn('tool icon', iconPath, e); });
+    }
+
+    addTool({
         id: 'myToolGhBtn',
         name: 'Area (GitHub)',
         title: 'Terrain area – tool loaded from GitHub (navonyaniv/tef-tools)',
-        icon: BASE + 'MyAnalysisTool/myTool.png',
         action: "ghTools.open('MyAnalysisTool/MyTool.html', 'Terrain Area (GitHub)')"
-    });
-    // SGS Processing is in the repo too (SGSProcessing/); its button is off until the tool is fixed.
+    }, 'MyAnalysisTool/myTool.png');
+
+    addTool({
+        id: 'sgsProcessingGhBtn',
+        name: 'Processing (GitHub)',
+        title: 'Run SkylineGlobe Server processing workflows – tool loaded from GitHub',
+        action: "ghTools.open('SGSProcessing/SGSProcessing.html', 'SGS Processing (GitHub)')"
+    }, 'SGSProcessing/sgsProcessing.svg');
 })();
