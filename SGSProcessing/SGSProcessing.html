@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1.0"/>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>SGS Processing</title>
+    <style>
+        body {
+            margin: 0.5rem;
+            font-family: Calibri, Arial;
+            font-size: 0.95rem;
+            color: #151515;
+        }
+        h3 { font-size: 1rem; margin: 0.6rem 0 0.3rem 0; }
+        label { display: block; font-weight: bold; margin-top: 0.5rem; }
+        .hint { color: #888; font-size: 0.8rem; font-weight: normal; }
+        .req { color: #c0392b; }
+        select, input[type=text], input[type=password], input[type=number], textarea {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0.2rem 0.3rem;
+            margin-top: 0.15rem;
+            border: 0.07rem solid #cfd5e3;
+            border-radius: 0.3rem;
+            font-family: Calibri, Arial;
+            font-size: 0.9rem;
+        }
+        textarea { height: 3.2rem; resize: vertical; font-family: Consolas, monospace; font-size: 0.75rem; }
+        button {
+            padding: 0.2rem 0.53rem;
+            margin: 0.3rem 0.3rem 0.3rem 0;
+            background-color: #f7f8fc80;
+            border: 0.07rem solid #e2e6ef;
+            border-radius: 0.4rem;
+            font-family: Calibri, Arial;
+            font-size: 0.9rem;
+        }
+        button:hover:not(:disabled) { border: 0.07rem solid #1383BE; cursor: pointer; }
+        button:disabled { opacity: 0.5; }
+        button.primary { background-color: #1383BE; color: #fff; border-color: #1383BE; }
+        .row { display: flex; gap: 0.3rem; align-items: center; }
+        .row > select { flex: 1; }
+        details { margin-top: 0.6rem; }
+        summary { cursor: pointer; color: #1383BE; }
+        #msg { margin: 0.4rem 0; min-height: 1rem; }
+        #msg.err { color: #c0392b; }
+        #msg.ok { color: #1e8449; }
+        #wfDesc { color: #555; font-size: 0.8rem; max-height: 4.5rem; overflow: auto; margin-top: 0.2rem; }
+        .job { border: 0.07rem solid #e2e6ef; border-radius: 0.4rem; padding: 0.3rem 0.4rem; margin-bottom: 0.3rem; font-size: 0.85rem; }
+        .job .top { display: flex; justify-content: space-between; }
+        .job .st { font-weight: bold; }
+        .st-Completed, .st-Succeeded { color: #1e8449; }
+        .st-Failed { color: #c0392b; }
+        .st-Running { color: #1383BE; }
+        .st-Queued { color: #b9770e; }
+        .bar { height: 0.3rem; background: #e2e6ef; border-radius: 0.2rem; margin: 0.2rem 0; }
+        .bar > div { height: 100%; background: #1383BE; border-radius: 0.2rem; }
+        .job button { font-size: 0.8rem; padding: 0.1rem 0.4rem; margin: 0.2rem 0.2rem 0 0; }
+        .hidden { display: none; }
+    </style>
+</head>
+
+<body onload="init()">
+    <!-- Login (shown only when the TEF session has no SGS login) -->
+    <div id="loginDiv" class="hidden">
+        <h3>Sign in to SkylineGlobe Server</h3>
+        <label>Site <input id="loginSite" type="text" value="Default"></label>
+        <label>User name <input id="loginUser" type="text" autocomplete="username"></label>
+        <label>Password <input id="loginPass" type="password" autocomplete="current-password"></label>
+        <button class="primary" onclick="login()">Sign in</button>
+    </div>
+
+    <!-- Run a workflow -->
+    <div id="mainDiv" class="hidden">
+        <div class="hint" id="userInfo"></div>
+        <label>Workflow
+            <select id="wfSelect" onchange="onWorkflowChange()"></select>
+        </label>
+        <div id="wfDesc"></div>
+        <div id="varsDiv"></div>
+        <details id="advDetails" class="hidden">
+            <summary>Advanced</summary>
+            <div id="advDiv"></div>
+        </details>
+        <button id="runBtn" class="primary" onclick="runWorkflow()">Run on server</button>
+        <div id="msg"></div>
+
+        <h3>My recent tasks <button onclick="refreshTasks()" title="Refresh">&#x21bb;</button></h3>
+        <div id="jobsDiv"></div>
+    </div>
+</body>
+<script>
+    var SGWorld  = null;
+    var groupID  = '';
+    var sgsBase  = '';          // e.g. https://server:5001 or https://server/sg
+    var workflows = [];         // [{id, name, description, definition (parsed or null)}]
+    var layers    = null;       // cached catalog layers
+    var polygonItem = null;     // drawn clip/extract polygon
+    var drawingVar  = null;     // name of the WKT variable being drawn
+    var pollTimer   = null;
+
+    // SGS workflow "layerType" -> catalog SpatialItemType values
+    var LAYER_TYPES = {
+        Mesh:       ['MESH3_DML', '_3DML', 'OPEN3_DML', 'MESH_PHOTO_MESH', 'MESH3_DGS'],
+        Imagery:    ['IMAGERY', 'RASTER', 'RASTER_COMPLEX', 'UNKNOWN_RASTER', 'TERRA_BUILDER_PROJECT'],
+        Elevation:  ['ELEVATION', 'RASTER', 'RASTER_COMPLEX', 'UNKNOWN_RASTER', 'TERRA_BUILDER_PROJECT'],
+        PointCloud: ['POINT_CLOUD'],
+        Feature:    ['FEATURE', 'FEATURE_COMPLEX', 'FEATURE_POINT', 'FEATURE_MULTI_POINT', 'FEATURE_LINE',
+                     'FEATURE_MULTI_LINE', 'FEATURE_POLYGON', 'FEATURE_MULTI_POLYGON']
+    };
+    var ACTIVE = ['Queued', 'Running', 'Pending', 'Starting'];
+
+    function init() {
+        SGWorld = parent.SGWorld;
+        groupID = parent.projectTree ? parent.projectTree.getMyDataGroup() : '';
+        sgsBase = getSgsBase();
+        start();
+    }
+
+    // The tool is served by SGS under <base>/tef/custom/tools/..., so SGS is the part before /tef/.
+    // Override with ?sgs=https://server:port when TEF is hosted elsewhere.
+    // When the page was loaded from GitHub by the config's loader (iframe srcdoc), its own URL is
+    // about:srcdoc, so the TEF page's URL (parent) is used instead.
+    function getSgsBase() {
+        var loc = location;
+        try { if (loc.pathname.toLowerCase().indexOf('/tef/') < 0 && parent.location.pathname) loc = parent.location; } catch (e) {}
+        var p = new URLSearchParams(loc.search).get('sgs');
+        if (p) return p.replace(/\/+$/, '');
+        var i = loc.pathname.toLowerCase().indexOf('/tef/');
+        return loc.origin + (i > 0 ? loc.pathname.substring(0, i) : '');
+    }
+
+    // ---------- SGS communication ----------
+
+    function gql(query, variables) {
+        return fetch(sgsBase + '/graphql/', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: query, variables: variables || {} })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.errors && res.errors.length) {
+                var e = new Error(res.errors[0].message);
+                var ext = res.errors[0].extensions || {};
+                e.loginRequired = ext.reasonCode === 'LoginRequired' || ext.code === 'Unauthorized' || ext.code === 'AUTH_NOT_AUTHENTICATED';
+                throw e;
+            }
+            return res.data;
+        });
+    }
+
+    function start() {
+        setMsg('Connecting to ' + sgsBase + ' ...');
+        gql('{ MyAccount(maxRecentLayers:0, maxRecentTasks:0) { account { username role siteName } ' +
+            'capabilities { canRunWorkflows runnableWorkflows { id name description } } errorMessages } }')
+        .then(function (d) {
+            var acc = d.MyAccount;
+            show('loginDiv', false);
+            show('mainDiv', true);
+            document.getElementById('userInfo').textContent =
+                'Signed in as ' + acc.account.username + ' (' + acc.account.role + ', site ' + acc.account.siteName + ')';
+            if (!acc.capabilities.canRunWorkflows || !acc.capabilities.runnableWorkflows.length) {
+                setMsg('Your user has no workflows it can run on this server.', 'err');
+                document.getElementById('runBtn').disabled = true;
+                return;
+            }
+            return loadWorkflows(acc.capabilities.runnableWorkflows).then(function () {
+                setMsg('');
+                refreshTasks();
+            });
+        })
+        .catch(function (e) {
+            if (e.loginRequired) {
+                setMsg('');
+                show('mainDiv', false);
+                show('loginDiv', true);
+            } else {
+                setMsg('Cannot reach SGS: ' + e.message, 'err');
+            }
+        });
+    }
+
+    function login() {
+        var site = document.getElementById('loginSite').value.trim() || 'Default';
+        setMsg('Signing in...');
+        fetch(sgsBase + '/' + encodeURIComponent(site) + '/connectSG', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                request: 'login',
+                isPersistent: true,
+                username: document.getElementById('loginUser').value,
+                password: document.getElementById('loginPass').value
+            })
+        }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res.result !== 'success') throw new Error(res.resultMessageDescription || 'Login failed');
+            document.getElementById('loginPass').value = '';
+            start();
+        }).catch(function (e) { setMsg(e.message, 'err'); });
+    }
+
+    // Workflow definitions (variables) are readable by administrators; other users get the
+    // runnable list only and type the variables as JSON.
+    function loadWorkflows(runnable) {
+        workflows = runnable.map(function (w) { return { id: w.id, name: w.name, description: w.description, definition: null }; });
+        return gql('{ Workflows(maxRecords:500) { workflows { id status definition } } }')
+            .then(function (d) {
+                d.Workflows.workflows.forEach(function (w) {
+                    var wf = workflows.find(function (x) { return x.id === w.id; });
+                    if (wf && w.definition) {
+                        try { wf.definition = JSON.parse(w.definition); } catch (e) {}
+                    }
+                });
+            })
+            .catch(function () { /* not an administrator - generic JSON form */ })
+            .then(function () {
+                var sel = document.getElementById('wfSelect');
+                sel.innerHTML = '';
+                workflows.forEach(function (w) { sel.add(new Option(w.name, w.id)); });
+                onWorkflowChange();
+            });
+    }
+
+    function loadLayers() {
+        if (layers) return Promise.resolve(layers);
+        return gql('{ Layers(maxRecords:5000, sortByColumn:"name") { layerDtoList { id name type ' +
+                   'latLonGeoInformation { boundingBox { topLeftX topLeftY bottomRightX bottomRightY } } } } }')
+            .then(function (d) { layers = d.Layers.layerDtoList; return layers; });
+    }
+
+    // ---------- Dynamic form ----------
+
+    function currentWorkflow() {
+        var id = document.getElementById('wfSelect').value;
+        return workflows.find(function (w) { return w.id === id; });
+    }
+
+    function onWorkflowChange() {
+        clearPolygon();
+        var wf = currentWorkflow();
+        var varsDiv = document.getElementById('varsDiv');
+        var advDiv  = document.getElementById('advDiv');
+        varsDiv.innerHTML = '';
+        advDiv.innerHTML  = '';
+        document.getElementById('wfDesc').textContent = (wf && (wf.description || (wf.definition && wf.definition.description))) || '';
+
+        if (!wf || !wf.definition) {
+            varsDiv.innerHTML = '<label>Variables (JSON) <textarea id="var__json">{\n  "SourcePath": ""\n}</textarea>' +
+                '<span class="hint">SourcePath is the layer ID in the SGS catalog.</span></label>';
+            show('advDetails', false);
+            return;
+        }
+
+        var vars = wf.definition.variables || [];
+        var hasAdv = false;
+        vars.forEach(function (v) {
+            var isAdvanced = !v.required && v.type !== 'list' && !isPolygonWkt(v) && !v.layerType;
+            if (/SRS$/i.test(v.name) && vars.some(isPolygonWkt)) isAdvanced = true;
+            (isAdvanced ? advDiv : varsDiv).appendChild(buildField(v));
+            hasAdv = hasAdv || isAdvanced;
+        });
+        show('advDetails', hasAdv);
+        refreshLayerSelects();
+    }
+
+    function isPolygonWkt(v) { return /WKT$/i.test(v.name); }
+
+    function prettyName(n) {
+        return n.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, function (c) { return c.toUpperCase(); });
+    }
+
+    function buildField(v) {
+        var wrap = document.createElement('div');
+        var lbl = document.createElement('label');
+        lbl.innerHTML = esc(prettyName(v.name)) + (v.required ? ' <span class="req">*</span>' : '');
+        var help = v.label || '';
+        if (help) lbl.title = help;
+        wrap.appendChild(lbl);
+
+        var id = 'var_' + v.name, ctl;
+        if (v.layerType) {
+            var row = document.createElement('div');
+            row.className = 'row';
+            ctl = document.createElement('select');
+            ctl.id = id;
+            ctl.dataset.layerType = v.layerType;
+            row.appendChild(ctl);
+            var fly = document.createElement('button');
+            fly.textContent = 'Fly to';
+            fly.title = 'Fly to the layer extent';
+            fly.onclick = function () { flyToLayer(ctl.value); };
+            row.appendChild(fly);
+            lbl.appendChild(row);
+        } else if (v.type === 'list') {
+            ctl = document.createElement('select');
+            ctl.id = id;
+            if (!v.required) ctl.add(new Option('', ''));
+            (v.options || []).forEach(function (o) { ctl.add(new Option(o.label || o.value, o.value)); });
+            if (v.default !== undefined) ctl.value = v.default;
+            // other variables may use this one as their layer type, e.g. "${LayerType}"
+            ctl.onchange = refreshLayerSelects;
+            lbl.appendChild(ctl);
+        } else if (isPolygonWkt(v)) {
+            ctl = document.createElement('textarea');
+            ctl.id = id;
+            ctl.placeholder = 'Empty = whole layer';
+            lbl.appendChild(ctl);
+            var b1 = document.createElement('button');
+            b1.textContent = 'Draw area';
+            b1.onclick = function () { startDraw(v.name); };
+            var b2 = document.createElement('button');
+            b2.textContent = 'Clear';
+            b2.onclick = clearPolygon;
+            wrap.appendChild(b1);
+            wrap.appendChild(b2);
+            help = 'Draw a polygon on the terrain (right-click to finish). Empty = whole layer.';
+        } else if (v.type === 'bool' || v.type === 'boolean') {
+            ctl = document.createElement('input');
+            ctl.type = 'checkbox';
+            ctl.id = id;
+            ctl.checked = v.default === true || v.default === 'true';
+            lbl.appendChild(ctl);
+        } else {
+            ctl = document.createElement('input');
+            ctl.type = (v.type === 'number' || v.type === 'int' || v.type === 'integer') ? 'number' : 'text';
+            ctl.id = id;
+            if (v.default !== undefined) ctl.value = v.default;
+            lbl.appendChild(ctl);
+        }
+        ctl.dataset.varName = v.name;
+
+        if (help && help.length <= 140) {
+            var h = document.createElement('div');
+            h.className = 'hint';
+            h.textContent = help;
+            wrap.appendChild(h);
+        }
+        return wrap;
+    }
+
+    // Fill each layer dropdown with catalog layers of the type its variable asks for.
+    function refreshLayerSelects() {
+        var sels = document.querySelectorAll('select[data-layer-type]');
+        if (!sels.length) return;
+        loadLayers().then(function (all) {
+            sels.forEach(function (sel) {
+                var t = sel.dataset.layerType.replace(/\$\{(\w+)\}/g, function (m, n) {
+                    var src = document.getElementById('var_' + n);
+                    return src ? src.value : '';
+                });
+                var types = LAYER_TYPES[t] || [];
+                var prev = sel.value;
+                sel.innerHTML = '';
+                all.filter(function (l) { return !types.length || types.indexOf(l.type) >= 0; })
+                   .forEach(function (l) { sel.add(new Option(l.name + '  (' + l.id + ')', l.id)); });
+                if (!sel.options.length) sel.add(new Option('No ' + t + ' layers in the catalog', ''));
+                if (prev && Array.prototype.some.call(sel.options, function (o) { return o.value === prev; })) sel.value = prev;
+            });
+        }).catch(function (e) { setMsg('Cannot list layers: ' + e.message, 'err'); });
+    }
+
+    function flyToLayer(id) {
+        var l = layers && layers.find(function (x) { return String(x.id) === String(id); });
+        var bb = l && l.latLonGeoInformation && l.latLonGeoInformation.boundingBox;
+        if (!bb) return;
+        var cx = (bb.topLeftX + bb.bottomRightX) / 2, cy = (bb.topLeftY + bb.bottomRightY) / 2;
+        var size = Math.max(Math.abs(bb.bottomRightX - bb.topLeftX) * Math.cos(cy * Math.PI / 180),
+                            Math.abs(bb.topLeftY - bb.bottomRightY)) * 111320;
+        var dist = Math.min(Math.max(size * 1.5, 300), 200000);
+        // AltitudeType 0 = relative to terrain; pitch -60 degrees
+        var pos = SGWorld.Creator.CreatePosition(cx, cy, 0, 0, 0, -60, 0, dist);
+        SGWorld.Navigate.FlyTo(pos);
+    }
+
+    // ---------- Polygon drawing ----------
+
+    function startDraw(varName) {
+        clearPolygon();
+        drawingVar = varName;
+        setMsg('Click on the terrain to add points. Right-click to finish.');
+        // DrawingMode 36 = DRAW_MODE_MAGNET | DRAW_MODE_CLOSED
+        polygonItem = SGWorld.Drawing.DrawPolygon(36, groupID);
+        SGWorld.AttachEvent('OnRButtonUp', onDrawFinish);
+    }
+
+    function onDrawFinish() {
+        SGWorld.DetachEvent('OnRButtonUp', onDrawFinish);
+        SGWorld.Window.SetInputMode(0);
+        try {
+            var ring = polygonItem.Geometry.Rings.Item(0);
+            var pts = [];
+            for (var i = 0; i < ring.Points.Count; i++) {
+                var p = ring.Points.Item(i);
+                pts.push(p.X + ' ' + p.Y);
+            }
+            if (pts.length < 3) throw new Error('A polygon needs at least 3 points.');
+            if (pts[0] !== pts[pts.length - 1]) pts.push(pts[0]);
+            // The 3D world is WGS84 lon/lat, so the polygon's coordinate system variable stays empty (= WGS84).
+            document.getElementById('var_' + drawingVar).value = 'POLYGON((' + pts.join(', ') + '))';
+            setMsg('Area set (' + (pts.length - 1) + ' points).', 'ok');
+        } catch (e) {
+            setMsg('Drawing failed: ' + e.message, 'err');
+        }
+    }
+
+    function clearPolygon() {
+        if (SGWorld) {
+            SGWorld.DetachEvent('OnRButtonUp', onDrawFinish);
+            SGWorld.Window.SetInputMode(0);
+        }
+        if (polygonItem) {
+            try { SGWorld.ProjectTree.DeleteItem(polygonItem.ID); } catch (e) {}
+            polygonItem = null;
+        }
+        if (drawingVar) {
+            var t = document.getElementById('var_' + drawingVar);
+            if (t) t.value = '';
+            drawingVar = null;
+        }
+    }
+
+    // ---------- Run ----------
+
+    function collectVariables() {
+        var json = document.getElementById('var__json');
+        if (json) return JSON.parse(json.value);
+        var vars = {};
+        document.querySelectorAll('[data-var-name]').forEach(function (c) {
+            var val = c.type === 'checkbox' ? String(c.checked) : c.value.trim();
+            if (val !== '') vars[c.dataset.varName] = val;
+        });
+        return vars;
+    }
+
+    function runWorkflow() {
+        var wf = currentWorkflow();
+        var vars;
+        try { vars = collectVariables(); } catch (e) { setMsg('Invalid JSON: ' + e.message, 'err'); return; }
+        var missing = ((wf.definition && wf.definition.variables) || [])
+            .filter(function (v) { return v.required && !vars[v.name]; })
+            .map(function (v) { return prettyName(v.name); });
+        if (missing.length) { setMsg('Missing: ' + missing.join(', '), 'err'); return; }
+
+        var btn = document.getElementById('runBtn');
+        btn.disabled = true;
+        setMsg('Submitting...');
+        gql('mutation($i: StartWorkflowInput) { StartWorkflow(startWorkflowInputDto: $i) { successStatus errorMessage taskId } }', {
+            i: {
+                workflowId: wf.id,
+                sourceLayerId: vars.SourcePath ? String(vars.SourcePath) : null,
+                variablesJson: JSON.stringify(vars),
+                priority: 'Normal',
+                maxRetries: 0
+            }
+        }).then(function (d) {
+            var r = d.StartWorkflow;
+            if (!r.successStatus) throw new Error(r.errorMessage || 'The server refused the task');
+            setMsg('Task ' + r.taskId + ' submitted.', 'ok');
+            refreshTasks();
+        }).catch(function (e) {
+            setMsg('Run failed: ' + e.message, 'err');
+        }).then(function () { btn.disabled = false; });
+    }
+
+    // ---------- Tasks ----------
+
+    function refreshTasks() {
+        clearTimeout(pollTimer);
+        gql('{ UserWorkerTasks(maxRecords:10) { tasks { taskId workflowName status currentStep progress downloadLink errorMessage createdAt } } }')
+        .then(function (d) {
+            var tasks = d.UserWorkerTasks.tasks;
+            renderTasks(tasks);
+            if (tasks.some(function (t) { return ACTIVE.indexOf(t.status) >= 0; }))
+                pollTimer = setTimeout(refreshTasks, 4000);
+        }).catch(function (e) {
+            document.getElementById('jobsDiv').textContent = 'Cannot read tasks: ' + e.message;
+        });
+    }
+
+    function renderTasks(tasks) {
+        var div = document.getElementById('jobsDiv');
+        if (!tasks.length) { div.innerHTML = '<span class="hint">No tasks yet.</span>'; return; }
+        div.innerHTML = tasks.map(function (t) {
+            var active = ACTIVE.indexOf(t.status) >= 0;
+            var h = '<div class="job"><div class="top"><span>#' + esc(t.taskId) + ' ' + esc(t.workflowName) + '</span>' +
+                    '<span class="st st-' + esc(t.status) + '">' + esc(t.status) + '</span></div>' +
+                    '<div class="hint">' + esc(new Date(t.createdAt).toLocaleString()) + (t.currentStep ? ' &middot; step: ' + esc(t.currentStep) : '') + '</div>';
+            if (t.status === 'Running') h += '<div class="bar"><div style="width:' + (t.progress || 0) + '%"></div></div>';
+            if (t.errorMessage) h += '<div class="st-Failed">' + esc(t.errorMessage) + '</div>';
+            if (t.downloadLink) h += '<button onclick="openUrl(\'' + esc(t.downloadLink) + '\')">Download</button>';
+            h += '<button onclick="openUrl(\'/api/v1/tasks/download/log/' + esc(t.taskId) + (active ? '?source=running' : '') + '\')">Log</button>';
+            if (t.status === 'Queued')  h += '<button onclick="taskAction(\'RemoveQueuedTask\',' + Number(t.taskId) + ')">Cancel</button>';
+            if (t.status === 'Running') h += '<button onclick="taskAction(\'TerminateRunningTask\',' + Number(t.taskId) + ')">Stop</button>';
+            if (t.status === 'Failed')  h += '<button onclick="taskAction(\'RerunTask\',' + Number(t.taskId) + ')">Rerun</button>';
+            return h + '</div>';
+        }).join('');
+    }
+
+    function taskAction(mutation, taskId) {
+        gql('mutation($id: Long!) { ' + mutation + '(taskId: $id) { successStatus errorMessage } }', { id: taskId })
+        .then(function (d) {
+            var r = d[mutation];
+            if (!r.successStatus) throw new Error(r.errorMessage);
+            refreshTasks();
+        }).catch(function (e) { setMsg(e.message, 'err'); });
+    }
+
+    function openUrl(path) { window.open(sgsBase + path, '_blank'); }
+
+    // ---------- Helpers ----------
+
+    function setMsg(text, cls) {
+        var m = document.getElementById('msg');
+        m.textContent = text;
+        m.className = cls || '';
+        if (document.getElementById('mainDiv').classList.contains('hidden')) {
+            // connecting / login screen
+            document.getElementById('loginDiv').after(m);
+        } else {
+            document.getElementById('runBtn').after(m);
+        }
+    }
+
+    function show(id, visible) { document.getElementById(id).classList.toggle('hidden', !visible); }
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function te_exit() {
+        clearTimeout(pollTimer);
+        clearPolygon();
+    }
+
+    window.addEventListener('pagehide', te_exit);
+</script>
+</html>
