@@ -27,10 +27,11 @@
     };
 
     analysis.addAnalysisTool({
-        id: 'sgsProcessingGhBtn',
-        name: 'SGS Processing',
-        title: 'Run SkylineGlobe Server processing workflows (tool loaded from GitHub)',
-        icon: BASE + 'SGSProcessing/sgsProcessing.svg',
-        action: "ghTools.open('SGSProcessing/SGSProcessing.html', 'SGS Processing')"
+        id: 'myToolGhBtn',
+        name: 'Area (GitHub)',
+        title: 'Terrain area – tool loaded from GitHub (navonyaniv/tef-tools)',
+        icon: BASE + 'MyAnalysisTool/myTool.png',
+        action: "ghTools.open('MyAnalysisTool/MyTool.html', 'Terrain Area (GitHub)')"
     });
+    // SGS Processing is in the repo too (SGSProcessing/); its button is off until the tool is fixed.
 })();

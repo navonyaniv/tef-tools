@@ -1,0 +1,124 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1.0"/>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <style>
+        body {
+            text-align: center;
+        }
+        .s8 {
+            font-family: Calibri, Arial;
+            font-size: 1rem;
+            font-style: normal;
+            font-weight: normal;
+            color: #151515;
+            text-decoration: none;
+        }
+        button {
+            padding: 0.2rem 0.53rem 0.2rem 0.53rem;
+            margin: 0.3rem;
+            white-space: normal;
+            background-color: #f7f8fc80;
+            border: 0.07rem solid #e2e6ef;
+            border-radius: 0.4rem;
+            font-family: Calibri, Arial;
+            font-size: 0.9rem;
+            font-weight: normal;
+        }
+        button:hover {
+            border: 0.07rem solid #1383BE;
+            cursor: pointer;
+        }
+
+        .b {
+            font-weight: bolder;
+        }
+
+        #instructions { color: #888; }
+
+    </style>
+</head>
+
+<body onload="init()">
+    <h3 class="s8 b">Terrain Area (GitHub)</h3>
+    <p class="s8" style="color:#1383BE;font-size:0.8rem">Loaded from github.com/navonyaniv/tef-tools</p>
+    <button id="drawBtn" class="s8" onclick="startDraw()">Draw Area</button>
+    <button id="clearBtn" class="s8" onclick="clearAll()" style="display:none">Clear</button>
+    <p id="instructions" class="s8"></p>
+    <div id="result" class="s8"></div>
+</body>
+<script>
+    var SGWorld  = null;
+    var polyline = null;
+    var groupID  = '';
+
+    function init() {
+        SGWorld = parent.SGWorld;
+        groupID = parent.projectTree ? parent.projectTree.getMyDataGroup() : '';
+    }
+
+    function startDraw() {
+        clearAll();
+        setMsg('Click to place points. Right-click to finish.');
+        document.getElementById('drawBtn').style.display = 'none';
+
+        // DrawingMode 36 = DRAW_MODE_MAGNET | DRAW_MODE_CLOSED
+        polyline = SGWorld.Drawing.DrawPolygon(36, groupID);
+
+        SGWorld.AttachEvent('OnRButtonUp', onDrawFinish);
+    }
+
+    function onDrawFinish() {
+        SGWorld.DetachEvent('OnRButtonUp', onDrawFinish);
+        SGWorld.Window.SetInputMode(0);
+
+        try {
+            var areaSqM = SGWorld.Analysis.MeasureTerrainArea(polyline.Geometry);
+            showResult(areaSqM);
+        } catch (e) {
+            setMsg('Error: ' + e.message);
+            document.getElementById('drawBtn').style.display = 'inline';
+            return;
+        }
+
+        document.getElementById('drawBtn').style.display = 'inline';
+        document.getElementById('clearBtn').style.display = 'inline';
+        setMsg('');
+    }
+
+    function showResult(sqM) {
+        var sqKm = sqM / 1e6;
+        var ha   = sqM / 10000;
+        document.getElementById('result').innerHTML =
+            '<span>' + Math.round(sqM).toLocaleString() + ' m²</span><br>' +
+            '<span>' + ha.toFixed(2)   + ' ha</span><br>' +
+            '<span>' + sqKm.toFixed(4) + ' km²</span>';
+    }
+
+    function clearAll() {
+        SGWorld.DetachEvent('OnRButtonUp', onDrawFinish);
+        SGWorld.Window.SetInputMode(0);
+        
+        document.getElementById('drawBtn').style.display = 'inline';
+        document.getElementById('result').innerHTML = '';
+        document.getElementById('clearBtn').style.display = 'none';
+        setMsg('');
+        if (polyline) {
+            try { SGWorld.ProjectTree.DeleteItem(polyline.ID); } catch (e) {}
+            polyline = null;
+        }
+    }
+
+    function setMsg(msg) {
+        document.getElementById('instructions').textContent = msg;
+    }
+    function te_exit() 
+    {
+        clearAll();
+    }
+
+    window.addEventListener('pagehide', te_exit);
+</script>
+</html>

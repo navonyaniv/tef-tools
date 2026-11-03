@@ -16,4 +16,5 @@ The browser blocks a cross-origin iframe from using `parent.SGWorld`.
 ## Tools
 | Folder | Tool |
 |---|---|
-| `SGSProcessing/` | Runs SkylineGlobe Server processing workflows (3DML → 3D Tiles, Extract Raster, …) |
+| `MyAnalysisTool/` | Terrain Area (GitHub): draw a polygon, get its terrain area. The proof of concept, with a button in `loader.js` |
+| `SGSProcessing/` | Runs SkylineGlobe Server processing workflows (3DML → 3D Tiles, Extract Raster, …). No button yet: it needs fixes |
