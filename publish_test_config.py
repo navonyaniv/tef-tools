@@ -3,12 +3,13 @@
 python publish_test_config.py            list the site's TEF configs (no change)
 python publish_test_config.py --apply    create/update the config "ghtools_test" and verify it through gettefconfig
 
-The site and the login come from Election2026/publish_config.py: the session of the TerraExplorer
+The site is SGS_SITE (default: the ElectionIL2026 site of Election2026/publish_config.py); the login comes from publish_config.py: the session of the TerraExplorer
 that is logged in to the site (cookie kept in memory only, never printed). The config is never made default.
 """
 import json, os, sys, urllib.parse, urllib.request
 sys.path.insert(0, r"D:\Private\Apps\TENew\Election2026")
 import publish_config as pc
+pc.SITE = os.environ.get("SGS_SITE", pc.SITE).rstrip("/")   # e.g. https://navon.skylinesoft.com:5001/Default
 
 NAME = os.environ.get("TEST_CONFIG", "ghtools_test")
 LOADER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loader.js")
